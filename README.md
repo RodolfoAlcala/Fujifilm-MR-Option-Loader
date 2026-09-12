@@ -53,11 +53,11 @@ Leave DAT1-DAT3 unconnected.
 
 Format the card as FAT32. Add the csv file and name it the asset.  Be aware the title is case sensative so make sure it is all capitalized, e.i. `SY629.CSV` and put it in the card root. Include a header row with the description in column one and the code in column two. The firmware skips the header and types every second-column code from `SY629.CSV`, one per line, into the USB host.
 
-| Description | Code |
-| :---------- | :---------: | 
-| DWI Package | D1BFE591565C2742 |
-| BASG Imaging | C5B23DE5A4070164 |
-
+```text
+Description, Code
+DWI Package,D1BFE591565C2742
+BASG Imaging,C5B23DE5A4070164
+```
 
 The LCD shows the selected asset. The modality button cycles through `M`, `OV`, `SY`, and `Y`. The next-character button increments the active digit from 0 through 9. A short SEND/SELECT press advances to the next digit; a long press sends every code from the selected file, one per line, into the USB host. For example, `SY629` can be changed to `SY014` and opens `SY014.CSV`.
 
