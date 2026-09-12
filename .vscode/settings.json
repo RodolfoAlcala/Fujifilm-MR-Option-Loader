@@ -1,0 +1,18 @@
+{
+    "cmake.configureOnOpen": true,
+    "cmake.generator": "Ninja",
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/lib/FatFs_SPI/ff15/source",
+        "${workspaceFolder}/lib/FatFs_SPI/sd_driver",
+        "${workspaceFolder}/lib/FatFs_SPI/include",
+        "${env:USERPROFILE}/.pico-sdk/sdk/2.3.1/**",
+        "${env:USERPROFILE}/.pico-sdk/toolchain/15_2_Rel1/lib/gcc/arm-none-eabi/15.2.1/include",
+        "${env:USERPROFILE}/.pico-sdk/toolchain/15_2_Rel1/lib/gcc/arm-none-eabi/15.2.1/include-fixed",
+        "${env:USERPROFILE}/.pico-sdk/toolchain/15_2_Rel1/arm-none-eabi/include"
+    ],
+    "C_Cpp.default.compilerPath": "${env:USERPROFILE}/.pico-sdk/toolchain/15_2_Rel1/bin/arm-none-eabi-gcc.exe",
+    "C_Cpp.default.intelliSenseMode": "gcc-arm",
+    "C_Cpp.default.cStandard": "c11"
+}

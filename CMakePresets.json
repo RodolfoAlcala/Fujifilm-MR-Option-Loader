@@ -1,0 +1,18 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "default",
+            "displayName": "Pico SDK Debug",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_MAKE_PROGRAM": "$env{USERPROFILE}/.pico-sdk/ninja/v1.13.2/ninja.exe"
+            },
+            "environment": {
+                "PATH": "$env{USERPROFILE}/.pico-sdk/toolchain/15_2_Rel1/bin;$env{USERPROFILE}/.pico-sdk/ninja/v1.13.2;$penv{PATH}"
+            }
+        }
+    ]
+}

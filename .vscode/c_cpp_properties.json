@@ -1,0 +1,31 @@
+{
+  "configurations": [
+    {
+      "name": "Pico-RP2040",
+      "compilerPath": "${env:USERPROFILE}\\.pico-sdk\\toolchain\\15_2_Rel1\\bin\\arm-none-eabi-gcc.exe",
+      "intelliSenseMode": "gcc-arm",
+      "cStandard": "c11",
+      "cppStandard": "c++17",
+      "includePath": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/lib/FatFs_SPI/ff15/source",
+        "${workspaceFolder}/lib/FatFs_SPI/sd_driver",
+        "${workspaceFolder}/lib/FatFs_SPI/include",
+        "${workspaceFolder}/build",
+        "${env:USERPROFILE}/.pico-sdk/sdk/2.3.1/**",
+        "${env:USERPROFILE}/.pico-sdk/toolchain/15_2_Rel1/lib/gcc/arm-none-eabi/15.2.1/include",
+        "${env:USERPROFILE}/.pico-sdk/toolchain/15_2_Rel1/lib/gcc/arm-none-eabi/15.2.1/include-fixed",
+        "${env:USERPROFILE}/.pico-sdk/toolchain/15_2_Rel1/arm-none-eabi/include"
+      ],
+      "browse": {
+        "path": [
+          "${workspaceFolder}",
+          "${workspaceFolder}/lib/FatFs_SPI",
+          "${env:USERPROFILE}/.pico-sdk/sdk/2.3.1"
+        ]
+      },
+      "compileCommands": "${workspaceFolder}/build/compile_commands.json"
+    }
+  ],
+  "version": 4
+}
