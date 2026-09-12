@@ -71,4 +71,3 @@ Connect the buttons as follows:
 | Modality button | GP14 and GND |
 
 The firmware enables the internal pull-ups, so pressing a button pulls its input low.
-
