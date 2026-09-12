@@ -35,8 +35,6 @@ This project uses the breakout in SPI mode. Connect the 3.3 V Pico to the breako
 
 Leave DAT1-DAT3 unconnected. Format the card as FAT32 and add a `SY629.CSV` file in the card root. Include a header row with the description in column one and the code in column two. The firmware skips the header and types every second-column code from `SY629.CSV`, one per line, into the USB host.
 
-Connect the SEND/SELECT pushbutton between GP15 and GND, the next-character button between GP13 and GND, and the modality button between GP14 and GND. The firmware enables the internal pull-ups, so pressing a button pulls its input low.
-
 ## Adafruit 128x32 OLED
 Connect the Adafruit 128x32 OLED as follows: 
 
@@ -58,4 +56,13 @@ Rear panel,V0RGU824TWXCOY96
 ```
 
 The LCD shows the selected asset. The modality button cycles through `M`, `OV`, `SY`, and `Y`. The next-character button increments the active digit from 0 through 9. A short SEND/SELECT press advances to the next digit; a long press sends every code from the selected file, one per line, into the USB host. For example, `SY629` can be changed to `SY014` and opens `SY014.CSV`.
+
+## Buttons
+Connect the buttons as follows:
+
+| SEND/SELECT | GP15 and GND |
+| Next-character |  GP13 and GND |
+| Modality button | GP14 and GND |
+
+The firmware enables the internal pull-ups, so pressing a button pulls its input low.
 
