@@ -37,7 +37,17 @@ Leave DAT1-DAT3 unconnected. Format the card as FAT32 and add a `SY629.CSV` file
 
 Connect the SEND/SELECT pushbutton between GP15 and GND, the next-character button between GP13 and GND, and the modality button between GP14 and GND. The firmware enables the internal pull-ups, so pressing a button pulls its input low.
 
-Connect the Adafruit 128x32 OLED as follows: `SDA` to GP4, `SCL` to GP5, `VCC` to 3V3(OUT), and `GND` to GND. The firmware supports the usual OLED I2C addresses `0x3C` and `0x3D`.
+## Adafruit 128x32 OLED
+Connect the Adafruit 128x32 OLED as follows: 
+
+| Breakout | Pico |
+| --- | --- |
+| SDA | GP4 |
+| SCL | GP5 |
+| VCC | 3V3(OUT) |
+| GND | GND |
+
+The firmware supports the usual OLED I2C addresses `0x3C` and `0x3D`.
 
 For adjustable OLED contrast, connect a 10 kOhm potentiometer between 3V3(OUT) and GND, with its wiper connected to GP26/ADC0. Turn the potentiometer while the Pico is running.
 
