@@ -60,6 +60,8 @@ The LCD shows the selected asset. The modality button cycles through `M`, `OV`, 
 ## Buttons
 Connect the buttons as follows:
 
+| Button | Pico |
+| --- | --- |
 | SEND/SELECT | GP15 and GND |
 | Next-character |  GP13 and GND |
 | Modality button | GP14 and GND |
