@@ -66,8 +66,8 @@ Connect the buttons as follows:
 
 | Button | Pico |
 | --- | --- |
-| SEND/SELECT | GP15 and GND |
+| SEND/SELECT | GP12 and GND |
 | Next-character |  GP13 and GND |
-| Modality button | GP14 and GND |
+| Modality button | GP11 and GND |
 
 The firmware enables the internal pull-ups, so pressing a button pulls its input low.

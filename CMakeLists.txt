@@ -23,6 +23,6 @@ target_include_directories(FUJIFILM_MR_Option_Loader PRIVATE
 target_link_libraries(FUJIFILM_MR_Option_Loader pico_stdlib hardware_i2c hardware_adc tinyusb_device tinyusb_board FatFs_SPI)
 
 pico_enable_stdio_uart(FUJIFILM_MR_Option_Loader 0)
-pico_enable_stdio_usb(FUJIFILM_MR_Option_Loader 0)
+pico_enable_stdio_usb(FUJIFILM_MR_Option_Loader 1)
 
 pico_add_extra_outputs(FUJIFILM_MR_Option_Loader)

@@ -11,11 +11,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#define BUTTON_PIN 15
+#define BUTTON_PIN 12
 #define NEXT_CHARACTER_BUTTON_PIN 13
-#define MODALITY_BUTTON_PIN 14
+#define MODALITY_BUTTON_PIN 11
 #define STATUS_LED_PIN PICO_DEFAULT_LED_PIN
-#define MAX_OPTIONS_PER_ASSET 100
+#define MAX_OPTIONS_PER_ASSET 50
 #define MAX_OPTION_LENGTH 16
 #define MAX_CSV_LINE_LENGTH 64
 #define KEYBOARD_REPORT_DELAY_MS 10
@@ -24,6 +24,8 @@
 #define LCD_SCL_PIN 5
 #define OLED_WIDTH 128
 #define OLED_PAGES 4
+#define LCD_CONTRAST_ADC 0
+#define LCD_CONTRAST_PIN 26
 #define SEND_LONG_PRESS_MS 800
 #define OLED_ADDRESS_PRIMARY 0x3c
 
@@ -41,6 +43,7 @@ static size_t modality_index = 2;
 static char selected_asset_name[16] = "SY629";
 static size_t selected_digit_index;
 static bool lcd_ready;
+static uint8_t lcd_contrast = 0xff;
 static uint8_t lcd_address;
 
 // The OLED uses a command/data control byte before each I2C payload.
@@ -58,6 +61,15 @@ static void lcd_set_cursor(uint8_t x, uint8_t y) {
     lcd_write_command((uint8_t)(0xb0 | y));
     lcd_write_command((uint8_t)(x & 0x0f));
     lcd_write_command((uint8_t)(0x10 | (x >> 4)));
+}
+
+static void lcd_set_contrast(uint8_t contrast) {
+    if (!lcd_ready || contrast == lcd_contrast) {
+        return;
+    }
+    lcd_write_command(0x81);
+    lcd_write_command(contrast);
+    lcd_contrast = contrast;
 }
 
 static void lcd_clear(void) {
@@ -128,6 +140,13 @@ static void lcd_write_centered_text(const char *text, uint8_t page) {
     lcd_write_text(text);
 }
 
+static void update_lcd_contrast(void) {
+    adc_select_input(LCD_CONTRAST_ADC);
+    uint16_t reading = adc_read();
+    uint8_t contrast = (uint8_t)((reading * 255u) / 4095u);
+    lcd_set_contrast(contrast);
+}
+
 static void lcd_init(void) {
     i2c_init(LCD_I2C, 400 * 1000);
     gpio_set_function(LCD_SDA_PIN, GPIO_FUNC_I2C);
@@ -158,7 +177,7 @@ static void lcd_init(void) {
     lcd_write_command(0xa1);
     lcd_write_command(0xc8);
     lcd_write_command(0xda); lcd_write_command(0x02);
-    lcd_write_command(0x81); lcd_write_command(0xCF);
+    lcd_write_command(0x81); lcd_write_command(0x7f);
     lcd_write_command(0xd9); lcd_write_command(0xf1);
     lcd_write_command(0xdb); lcd_write_command(0x40);
     lcd_write_command(0xa4);
@@ -190,6 +209,7 @@ static void update_lcd_presence(void) {
 
     lcd_init();
     if (lcd_ready) {
+        update_lcd_contrast();
         if (awaiting_asset_selection) {
             lcd_show_asset_count();
         } else {
@@ -627,7 +647,10 @@ int main(void) {
     gpio_set_dir(STATUS_LED_PIN, GPIO_OUT);
     gpio_put(STATUS_LED_PIN, 0);
     printf("Pico starting\n");
+    adc_init();
+    adc_gpio_init(LCD_CONTRAST_PIN);
     lcd_init();
+    update_lcd_contrast();
     lcd_show_message("Initializing...");
     sleep_ms(500);
     lcd_show_message("Loading SD...");
@@ -665,13 +688,16 @@ int main(void) {
         keyboard_task();
         update_lcd_presence();
         update_sd_presence();
+        update_lcd_contrast();
         led_blink_task_update();
 
         // Convert active-low GPIO readings into the logical button state.
         bool button_down = !gpio_get(BUTTON_PIN);
         bool next_character_down = !gpio_get(NEXT_CHARACTER_BUTTON_PIN);
         bool modality_down = !gpio_get(MODALITY_BUTTON_PIN);
+
         uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+
         if (awaiting_asset_selection) {
             // The first SEND release leaves the startup screen and loads the default asset.
             if (!button_down && button_latched) {
