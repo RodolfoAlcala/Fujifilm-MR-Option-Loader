@@ -1,42 +1,25 @@
 # FUJIFILM MR Option Loader
 
-Minimal C/C++ Raspberry Pi Pico project using the official Pico SDK.
+RP2040 firmware that reads option codes from a microSD card and types them into a USB host as a HID keyboard. It uses a 128x32 SSD1306-compatible I2C OLED for status and three buttons for selecting and sending codes.
 
-## Build
+## Hardware
 
-Open this folder in VS Code. CMake Tools should configure with Ninja and the installed SDK. Build with **CMake: Build** or run:
+The firmware targets the original Raspberry Pi Pico. Connect the peripherals to the Pico as follows.
 
-```powershell
-cmake --preset default
-cmake --build build
-```
+### OLED
 
-If no CMake preset is available, configure directly:
+Use a 128x32 SSD1306-compatible I2C display. The firmware uses I2C0 and probes addresses `0x3C` and `0x3D`.
 
-```powershell
-cmake -S . -B build -G Ninja
-cmake --build build
-```
-
-The build produces `build/FUJIFILM_MR_Option_Loader.uf2`. Hold **BOOTSEL** while connecting the Pico, then copy the UF2 file to the `RPI-RP2` drive. At startup, the OLED shows how many `.CSV` asset files are on the SD card; press the SEND/SELECT button to enter file selection.
-
-## Adafruit 128x32 OLED
-Connect the Adafruit 128x32 OLED as follows: 
-
-| Breakout | Pico |
+| Display | Pico |
 | --- | --- |
 | SDA | GP4 |
-| SCL | GP5 |
+| SCL/SCK | GP5 |
 | VCC | 3V3(OUT) |
 | GND | GND |
 
-The firmware supports the usual OLED I2C addresses `0x3C` and `0x3D`.
+### microSD breakout
 
-For adjustable OLED contrast, connect a 10 kOhm potentiometer between 3V3(OUT) and GND, with its wiper connected to GP26/ADC0. Turn the potentiometer while the Pico is running.
-
-## Adafruit SDIO MicroSD Breakout
-
-This project uses the breakout in SPI mode. Connect the 3.3 V Pico to the breakout as follows:
+The breakout is used in SPI mode. Leave DAT1-DAT3 unconnected.
 
 | Breakout | Pico |
 | --- | --- |
@@ -47,27 +30,56 @@ This project uses the breakout in SPI mode. Connect the 3.3 V Pico to the breako
 | DAT0 | GP16 |
 | CS | GP17 |
 
-Leave DAT1-DAT3 unconnected. 
+### Buttons
 
-## microSD Card
-
-Format the card as FAT32. Add the csv file and name it the asset.  Be aware the title is case sensative so make sure it is all capitalized, e.i. `SY629.CSV` and put it in the card root. Include a header row with the description in column one and the code in column two. The firmware skips the header and types every second-column code from `SY629.CSV`, one per line, into the USB host.
-
-```text
-Description,Code
-DWI Package,D1BFE591565C2742
-BASG Imaging,C5B23DE5A4070164
-```
-
-The LCD shows the selected asset. The modality button cycles through `M`, `OV`, `SY`, and `Y`. The next-character button increments the active digit from 0 through 9. A short SEND/SELECT press advances to the next digit; a long press sends every code from the selected file, one per line, into the USB host. For example, `SY629` can be changed to `SY014` and opens `SY014.CSV`.
-
-## Buttons
-Connect the buttons as follows:
+Connect one side of each normally-open button to its GPIO and the other side to GND. The firmware enables internal pull-ups, so a pressed button reads low.
 
 | Button | Pico |
 | --- | --- |
-| SEND/SELECT | GP12 and GND |
-| Next-character |  GP13 and GND |
-| Modality button | GP11 and GND |
+| SEND/SELECT | GP28 (physical pin 34) |
+| Next-character | GP22 |
+| Modality | GP20 |
 
-The firmware enables the internal pull-ups, so pressing a button pulls its input low.
+## microSD files
+
+Format the card as FAT32. Put asset files in the card's root directory, using an uppercase `.CSV` extension and the asset name shown on the display. For example, the default selection `SY629` loads `SY629.CSV`.
+
+Each file must have a header row followed by `description,code` rows. The firmware skips the header and types the second column, one code per line. It loads up to 50 codes per file, with each code limited to 16 characters.
+
+```csv
+Description,Code
+Example option,ABC123
+```
+
+## Controls
+
+- On startup, the OLED shows the number of CSV files found. Press and release SEND/SELECT to enter asset selection.
+- Press Next-character to increment the currently selected digit. Digits wrap from 9 to 0.
+- Press SEND/SELECT briefly to move the digit selection.
+- Press Modality to cycle through `M`, `OV`, `SY`, and `Y`.
+- Hold SEND/SELECT for at least 800 ms to type all loaded codes, one per line.
+
+The onboard LED stays on when the OLED does not respond at either supported I2C address. It turns off when a display responds. The firmware retries OLED detection once per second.
+
+## Build
+
+Install CMake, Ninja, the Arm GNU toolchain, and the Raspberry Pi Pico SDK. This project was developed with Pico SDK 2.3.1.
+
+Set `PICO_SDK_PATH` to the SDK directory, then configure and build:
+
+```sh
+cmake --preset default -DPICO_SDK_PATH=/path/to/pico-sdk
+cmake --build build
+```
+
+The UF2 file is generated at `build/FUJIFILM_MR_Option_Loader.uf2`.
+
+## Flash
+
+1. Hold BOOTSEL while connecting the Pico over USB.
+2. Copy `build/FUJIFILM_MR_Option_Loader.uf2` to the `RPI-RP2` drive.
+3. Reconnect the Pico normally.
+
+In normal firmware mode, the Pico enumerates as a USB HID keyboard named `Pico Keyboard`. It does not appear as a serial/COM port or mass-storage drive; `RPI-RP2` is only available in BOOTSEL mode. The firmware sends keystrokes to the USB host, so ensure the intended application and input field are selected before holding SEND/SELECT.
+
+See [HARDWARE_DESIGN.md](./HARDWARE_DESIGN.md) for the carrier-board and enclosure design notes.

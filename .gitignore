@@ -16,3 +16,7 @@
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Photos shared during hardware troubleshooting
+/PXL_20261005_223826342.jpg
+/PXL_20261005_223859499.MP.jpg

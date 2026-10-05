@@ -14,7 +14,6 @@ Use KiCad for the schematic and PCB layout. Keep the firmware pin assignments un
 | Display | Adafruit product 4440, 0.91-inch 128x32 I2C OLED, 20 x 35 mm PCB, about 4 mm thick |
 | Storage | Adafruit product 4682, Micro SD SPI or SDIO breakout, 25.4 x 22.8 mm PCB, 3V only |
 | Controls | Three normally-open momentary pushbuttons |
-| Contrast | 10 kOhm potentiometer, 3.3 V compatible, panel accessible |
 | Power/data | Pico micro-USB connector for revision 1 |
 | PCB | Two-layer FR-4, nominal 1.6 mm thickness, lead-free assembly compatible |
 | Enclosure | Two-piece handheld case, printed in a material selected after printer choice |
@@ -27,29 +26,28 @@ The USB-C option is deferred. Adding a separate USB-C connector would require a 
 | --- | ---: | --- |
 | OLED SDA | GP4 | I2C0_SDA |
 | OLED SCL | GP5 | I2C0_SCL |
-| Next-character button | GP13 | BTN_NEXT, active low |
-| Modality button | GP14 | BTN_MODALITY, active low |
-| Send/select button | GP15 | BTN_SEND, active low |
+| Next-character button | GP22 | BTN_NEXT, active low |
+| Modality button | GP20 | BTN_MODALITY, active low |
+| Send/select button | GP28 | BTN_SEND, active low |
 | SD DAT0 / MISO | GP16 | SD_MISO |
 | SD chip select | GP17 | SD_CS |
 | SD clock | GP18 | SD_SCK |
 | SD CMD / MOSI | GP19 | SD_MOSI |
-| OLED contrast wiper | GP26 / ADC0 | CONTRAST_WIPER |
 | 3.3 V | Pico 3V3(OUT) | +3V3 |
 | Ground | Pico GND | GND |
 
-The SD breakout is used in SPI mode. DAT1, DAT2, and DAT3 remain unconnected. The OLED is I2C at address 0x3C for product 4440.
+The SD breakout is used in SPI mode. DAT1, DAT2, and DAT3 remain unconnected. The OLED is I2C0 at address 0x3C for product 4440.
 
 ## Initial board envelope
 
-Use an initial carrier outline of approximately 90 x 55 mm. This is a starting envelope, not a fabrication release. Place the OLED near the front face, with its 25 x 7 mm active display area centered behind the case window. Place the three buttons below the display in a horizontal row. Place the potentiometer beside or below the buttons. Place the SD breakout near a side wall so the card can be inserted without opening the case. Place the Pico lengthwise with its micro-USB connector facing an end wall.
+Use an initial carrier outline of approximately 90 x 55 mm. This is a starting envelope, not a fabrication release. Place the OLED near the front face, with its 25 x 7 mm active display area centered behind the case window. Place the three buttons below the display in a horizontal row. Place the SD breakout near a side wall so the card can be inserted without opening the case. Place the Pico lengthwise with its micro-USB connector facing an end wall.
 
 Reserve at least:
 
 - 1.0 mm PCB edge clearance for copper and footprints
 - 2.0 mm clearance around the OLED display opening
 - 1.5 mm clearance around the SD card and card insertion path
-- 3.0 mm clearance from the case wall for button and potentiometer hardware
+- 3.0 mm clearance from the case wall for button hardware
 - 3.0 mm minimum screw-post or standoff diameter around mounting holes
 - 0.25 mm minimum enclosure clearance around fixed PCB features before printer-specific tuning
 
@@ -59,9 +57,8 @@ The final outline must be based on the actual Pico and breakout board hole locat
 
 - Route +3V3 and GND to the Pico and both breakouts.
 - Use the Pico's internal pull-ups for all three buttons; each button connects its GPIO directly to GND when pressed.
-- Connect the potentiometer ends to +3V3 and GND, with the wiper to GP26.
-- Add test pads for +3V3, GND, I2C_SDA, I2C_SCL, SD_CS, SD_SCK, SD_MOSI, and SD_MISO.
-- Add clearly labeled silkscreen for all buttons, the potentiometer, the display orientation, and the SD connector.
+- Add test pads for +3V3, GND, I2C0_SDA, I2C0_SCL, SD_CS, SD_SCK, SD_MOSI, and SD_MISO.
+- Add clearly labeled silkscreen for all buttons, the display orientation, and the SD connector.
 - Do not add a 5 V rail or level shifter. Product 4682 is a 3 V-only breakout.
 
 ## Enclosure requirements
@@ -77,11 +74,10 @@ The final outline must be based on the actual Pico and breakout board hole locat
 
 1. Confirm the exact Pico mechanical orientation and whether the board will be flush-mounted or raised on spacers.
 2. Confirm the physical button type and actuator height.
-3. Confirm the potentiometer shaft diameter, body height, and shaft style.
-4. Measure the actual OLED and SD breakout hole centers and pin spacing.
-5. Decide whether the SD card exits from the left or right side of the case.
-6. Select the printer, nozzle diameter, layer height, and preferred fastener size.
-7. Print a thin front-panel fit prototype before ordering the PCB.
+3. Measure the actual OLED and SD breakout hole centers and pin spacing.
+4. Decide whether the SD card exits from the left or right side of the case.
+5. Select the printer, nozzle diameter, layer height, and preferred fastener size.
+6. Print a thin front-panel fit prototype before ordering the PCB.
 
 ## Current electrical risk
 
