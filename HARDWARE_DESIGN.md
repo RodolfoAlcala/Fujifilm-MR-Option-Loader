@@ -26,9 +26,9 @@ The USB-C option is deferred. Adding a separate USB-C connector would require a 
 | --- | ---: | --- |
 | OLED SDA | GP4 | I2C0_SDA |
 | OLED SCL | GP5 | I2C0_SCL |
-| Next-character button | GP22 | BTN_NEXT, active low |
+| Next-character button | GP28 | BTN_NEXT, active low |
 | Modality button | GP20 | BTN_MODALITY, active low |
-| Send/select button | GP28 | BTN_SEND, active low |
+| Send/select button | GP22 | BTN_SEND, active low |
 | SD DAT0 / MISO | GP16 | SD_MISO |
 | SD chip select | GP17 | SD_CS |
 | SD clock | GP18 | SD_SCK |

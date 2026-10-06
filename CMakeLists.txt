@@ -26,7 +26,7 @@ target_include_directories(FUJIFILM_MR_Option_Loader PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
 )
 
-target_link_libraries(FUJIFILM_MR_Option_Loader pico_stdlib hardware_i2c tinyusb_device tinyusb_board FatFs_SPI)
+target_link_libraries(FUJIFILM_MR_Option_Loader pico_stdlib hardware_i2c hardware_watchdog tinyusb_device tinyusb_board FatFs_SPI)
 
 pico_enable_stdio_uart(FUJIFILM_MR_Option_Loader 0)
 pico_enable_stdio_usb(FUJIFILM_MR_Option_Loader 0)

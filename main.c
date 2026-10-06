@@ -2,8 +2,10 @@
 #include "tusb.h"
 #include "ff.h"
 #include "hw_config.h"
+#include "diskio.h"
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
+#include "hardware/watchdog.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -16,7 +18,8 @@
 #define STATUS_LED_PIN PICO_DEFAULT_LED_PIN
 #define MAX_OPTIONS_PER_ASSET 50
 #define MAX_OPTION_LENGTH 16
-#define MAX_CSV_LINE_LENGTH 64
+#define MAX_DESCRIPTION_LENGTH 64
+#define MAX_CSV_LINE_LENGTH 256
 #define KEYBOARD_REPORT_DELAY_MS 10
 #define LCD_I2C i2c0
 #define LCD_SDA_PIN 4
@@ -24,17 +27,48 @@
 #define OLED_WIDTH 128
 #define OLED_PAGES 4
 #define SEND_LONG_PRESS_MS 800
+#define UPDATE_MODE_EXIT_HOLD_MS 3000
+#define UPDATE_MODE_REBOOT_MAGIC 0x53445550
+#define SD_SECTOR_SIZE 512
+#define SCSI_CMD_SYNCHRONIZE_CACHE_10 0x35
 #define OLED_ADDRESS_PRIMARY 0x3c
 
+bool maintenance_mode;
+
+typedef struct {
+    bool raw_down;
+    bool stable_down;
+    uint32_t raw_changed_ms;
+} ButtonState;
+
+typedef enum {
+    BUTTON_EVENT_NONE,
+    BUTTON_EVENT_PRESSED,
+    BUTTON_EVENT_RELEASED
+} ButtonEvent;
+
+#define BUTTON_DEBOUNCE_MS 30
+
 static char output_lines[MAX_OPTIONS_PER_ASSET][MAX_OPTION_LENGTH + 1];
+static char option_descriptions[MAX_OPTIONS_PER_ASSET][MAX_DESCRIPTION_LENGTH + 1];
 static size_t output_line_count;
 static bool assets_loaded;
-static bool selected_file_empty;
+static bool selected_file_has_no_codes;
 static bool sd_missing;
 static bool awaiting_asset_selection;
 static size_t asset_file_count;
 static bool codes_sending;
 static bool codes_sent;
+static bool manual_transfer_active;
+static size_t current_code_index;
+static size_t invalid_csv_row_count;
+static bool maintenance_sd_ready;
+static bool maintenance_drive_ejected;
+static uint32_t maintenance_sector_count;
+static uint8_t maintenance_sector_buffer[SD_SECTOR_SIZE];
+static ButtonState send_button_state;
+static ButtonState next_character_button_state;
+static ButtonState modality_button_state;
 static const char *modalities[] = {"M", "OV", "SY", "Y"};
 static size_t modality_index = 2;
 static char selected_asset_name[16] = "SY629";
@@ -125,6 +159,44 @@ static void lcd_write_centered_text(const char *text, uint8_t page) {
     }
     lcd_set_cursor((uint8_t)((OLED_WIDTH - length * 6) / 2), page);
     lcd_write_text(text);
+}
+
+static void lcd_write_asset_name(void) {
+    size_t length = strlen(selected_asset_name);
+    size_t number_start = 0;
+    while (selected_asset_name[number_start] != '\0' &&
+           (selected_asset_name[number_start] < '0' ||
+            selected_asset_name[number_start] > '9')) {
+        number_start++;
+    }
+
+    uint8_t x = (uint8_t)((OLED_WIDTH - length * 12) / 2);
+    for (uint8_t page = 0; page < 2; page++) {
+        lcd_set_cursor(x, page);
+        for (size_t i = 0; i < length; i++) {
+            const uint8_t *glyph = lcd_glyph(selected_asset_name[i]);
+            bool selected_digit = !manual_transfer_active &&
+                                  i == number_start + selected_digit_index;
+            for (size_t column = 0; column < 12; column++) {
+                uint8_t pixels = 0;
+                if (column < 10) {
+                    uint8_t glyph_column = glyph[column / 2];
+                    for (uint8_t bit = 0; bit < 8; bit++) {
+                        uint8_t source_row =
+                            (uint8_t)((page * 8 + bit) / 2);
+                        if (source_row < 7 &&
+                            (glyph_column & (1u << source_row)) != 0) {
+                            pixels |= (uint8_t)(1u << bit);
+                        }
+                    }
+                }
+                if (selected_digit) {
+                    pixels = (uint8_t)~pixels;
+                }
+                lcd_write_data(pixels);
+            }
+        }
+    }
 }
 
 static void lcd_init(void) {
@@ -222,17 +294,66 @@ static void lcd_show_asset_count(void) {
     lcd_write_centered_text("Press button", 3);
 }
 
+static void lcd_show_update_mode(bool drive_ejected, bool eject_required) {
+    if (!lcd_ready) {
+        return;
+    }
+    lcd_clear();
+    lcd_write_centered_text("SD UPDATE MODE", 0);
+    if (!maintenance_sd_ready) {
+        lcd_write_centered_text("SD card unavailable", 1);
+        lcd_write_centered_text("Check card and reset", 3);
+        return;
+    }
+    lcd_write_centered_text("Edit CSV on computer", 1);
+    const char *drive_status = eject_required
+                                   ? "Eject drive first"
+                                   : drive_ejected ? "Drive ejected"
+                                                   : "Safely eject drive";
+    lcd_write_centered_text(drive_status, 2);
+    lcd_write_centered_text("Hold SEND 3 seconds", 3);
+}
+
+static void format_description(char *output, size_t output_size,
+                               const char *description) {
+    size_t length = strlen(description);
+    size_t max_length = output_size - 1;
+    if (length <= max_length) {
+        memcpy(output, description, length + 1);
+        return;
+    }
+
+    size_t visible_length = max_length > 3 ? max_length - 3 : max_length;
+    memcpy(output, description, visible_length);
+    if (max_length > 3) {
+        memcpy(output + visible_length, "...", 3);
+    }
+    output[max_length] = '\0';
+}
+
 static void lcd_show_asset(void) {
     if (!lcd_ready) {
         return;
     }
     lcd_clear();
-    lcd_write_centered_text(selected_asset_name, 1);
-    char selection[17];
-    if (codes_sending) {
-        snprintf(selection, sizeof(selection), "Sending codes...");
+    lcd_write_asset_name();
+    char selection[22];
+    char status[22];
+    if (manual_transfer_active && current_code_index < output_line_count) {
+        snprintf(selection, sizeof(selection), "%s",
+                 output_lines[current_code_index]);
+        const char *description = option_descriptions[current_code_index];
+        format_description(status, sizeof(status),
+                           description[0] == '\0' ? "No description"
+                                                  : description);
     } else if (codes_sent) {
         snprintf(selection, sizeof(selection), "All codes sent");
+        snprintf(status, sizeof(status), "%u options",
+                 (unsigned)output_line_count);
+    } else if (codes_sending) {
+        snprintf(selection, sizeof(selection), "Sending code...");
+        snprintf(status, sizeof(status), "%u options",
+                 (unsigned)output_line_count);
     } else {
         size_t number_start = 0;
         while (selected_asset_name[number_start] != '\0' &&
@@ -240,20 +361,19 @@ static void lcd_show_asset(void) {
                 selected_asset_name[number_start] > '9')) {
             number_start++;
         }
-        snprintf(selection, sizeof(selection), "Digit: %c",
+        snprintf(selection, sizeof(selection), "Digit %u/3: %c",
+                 (unsigned)(selected_digit_index + 1),
                  selected_asset_name[number_start + selected_digit_index]);
-    }
-    lcd_write_centered_text(selection, 2);
-    char status[17];
-    if (sd_missing) {
-        snprintf(status, sizeof(status), "SD not inserted");
-    } else if (assets_loaded) {
-        snprintf(status, sizeof(status), "%u options",
-                 (unsigned)output_line_count);
-    } else if (selected_file_empty) {
-        snprintf(status, sizeof(status), "File empty");
-    } else {
-        snprintf(status, sizeof(status), "No such file");
+        if (sd_missing) {
+            snprintf(status, sizeof(status), "SD not inserted");
+        } else if (assets_loaded) {
+            snprintf(status, sizeof(status), "%u options",
+                     (unsigned)output_line_count);
+        } else if (selected_file_has_no_codes) {
+            snprintf(status, sizeof(status), "No valid codes");
+        } else {
+            snprintf(status, sizeof(status), "No such file");
+        }
     }
     size_t status_length = strlen(status);
     if (status_length > OLED_WIDTH / 6) {
@@ -272,7 +392,6 @@ typedef enum {
 typedef struct {
     KeyboardState state;
     const char *text;
-    size_t line_index;
     size_t character_index;
     bool sending_newline;
     uint32_t next_action_ms;
@@ -281,6 +400,188 @@ typedef struct {
 static KeyboardTask keyboard_task_state = {0};
 
 static bool load_assets_from_sd(const char *asset_name);
+
+static sd_card_t *maintenance_card(void) {
+    return maintenance_sd_ready ? sd_get_by_num(0) : NULL;
+}
+
+static bool initialize_maintenance_card(void) {
+    sd_card_t *card = sd_get_by_num(0);
+    if (card == NULL || !sd_init_driver() || card->init == NULL) {
+        return false;
+    }
+
+    int status = card->init(card);
+    if ((status & (STA_NOINIT | STA_NODISK)) != 0 || card->sectors == 0 ||
+        card->read_blocks == NULL || card->write_blocks == NULL) {
+        return false;
+    }
+
+    maintenance_sector_count = card->sectors > UINT32_MAX
+                                   ? UINT32_MAX
+                                   : (uint32_t)card->sectors;
+    return maintenance_sector_count != 0;
+}
+
+void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8],
+                        uint8_t product_id[16], uint8_t product_rev[4]) {
+    (void)lun;
+    memset(vendor_id, ' ', 8);
+    memset(product_id, ' ', 16);
+    memset(product_rev, ' ', 4);
+    memcpy(vendor_id, "MRLoader", 8);
+    memcpy(product_id, "SD Card", 7);
+    memcpy(product_rev, "1.0", 3);
+}
+
+bool tud_msc_test_unit_ready_cb(uint8_t lun) {
+    return lun == 0 && maintenance_sd_ready && !maintenance_drive_ejected;
+}
+
+void tud_msc_capacity_cb(uint8_t lun, uint32_t *block_count,
+                         uint16_t *block_size) {
+    *block_count = lun == 0 ? maintenance_sector_count : 0;
+    *block_size = lun == 0 ? SD_SECTOR_SIZE : 0;
+}
+
+int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
+                          void *buffer, uint32_t bufsize) {
+    sd_card_t *card = maintenance_card();
+    if (lun != 0 || card == NULL || card->read_blocks == NULL ||
+        lba >= maintenance_sector_count ||
+        offset > SD_SECTOR_SIZE || bufsize > SD_SECTOR_SIZE - offset ||
+        card->read_blocks(card, maintenance_sector_buffer, lba, 1) != 0) {
+        return -1;
+    }
+
+    memcpy(buffer, maintenance_sector_buffer + offset, bufsize);
+    return (int32_t)bufsize;
+}
+
+int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
+                           uint8_t *buffer, uint32_t bufsize) {
+    sd_card_t *card = maintenance_card();
+    if (lun != 0 || card == NULL || card->read_blocks == NULL ||
+        card->write_blocks == NULL || lba >= maintenance_sector_count ||
+        offset > SD_SECTOR_SIZE || bufsize > SD_SECTOR_SIZE - offset ||
+        card->read_blocks(card, maintenance_sector_buffer, lba, 1) != 0) {
+        return -1;
+    }
+
+    memcpy(maintenance_sector_buffer + offset, buffer, bufsize);
+    if (card->write_blocks(card, maintenance_sector_buffer, lba, 1) != 0) {
+        return -1;
+    }
+
+    maintenance_drive_ejected = false;
+    return (int32_t)bufsize;
+}
+
+int32_t tud_msc_scsi_cb(uint8_t lun, uint8_t const scsi_cmd[16],
+                        void *buffer, uint16_t bufsize) {
+    (void)buffer;
+    (void)bufsize;
+    if (lun == 0 && scsi_cmd[0] == SCSI_CMD_SYNCHRONIZE_CACHE_10) {
+        return 0;
+    }
+
+    tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x20, 0x00);
+    return -1;
+}
+
+bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition,
+                           bool start, bool load_eject) {
+    (void)power_condition;
+    if (lun != 0) {
+        return false;
+    }
+    if (load_eject) {
+        maintenance_drive_ejected = !start;
+    }
+    return true;
+}
+
+static void initialize_button(uint pin, ButtonState *state) {
+    gpio_init(pin);
+    gpio_set_dir(pin, GPIO_IN);
+    gpio_pull_up(pin);
+    state->raw_down = !gpio_get(pin);
+    state->stable_down = state->raw_down;
+    state->raw_changed_ms = to_ms_since_boot(get_absolute_time());
+}
+
+static ButtonEvent update_button(uint pin, ButtonState *state,
+                                 uint32_t now_ms) {
+    bool raw_down = !gpio_get(pin);
+    if (raw_down != state->raw_down) {
+        state->raw_down = raw_down;
+        state->raw_changed_ms = now_ms;
+    }
+
+    if (state->stable_down != state->raw_down &&
+        now_ms - state->raw_changed_ms >= BUTTON_DEBOUNCE_MS) {
+        state->stable_down = state->raw_down;
+        return state->stable_down ? BUTTON_EVENT_PRESSED
+                                  : BUTTON_EVENT_RELEASED;
+    }
+    return BUTTON_EVENT_NONE;
+}
+
+static void run_sd_update_mode(void) {
+    maintenance_sd_ready = initialize_maintenance_card();
+    gpio_put(STATUS_LED_PIN, !maintenance_sd_ready || !lcd_ready);
+    lcd_show_update_mode(false, false);
+
+    bool button_released = !send_button_state.stable_down;
+    bool tracking_hold = false;
+    bool exit_attempted = false;
+    bool exit_blocked = false;
+    bool displayed_ejected = maintenance_drive_ejected;
+    uint32_t hold_started_ms = 0;
+
+    while (true) {
+        tud_task();
+        uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+        ButtonEvent send_event =
+            update_button(SEND_BUTTON_PIN, &send_button_state, now_ms);
+        bool button_down = send_button_state.stable_down;
+
+        if (send_event == BUTTON_EVENT_RELEASED) {
+            button_released = true;
+            tracking_hold = false;
+            exit_attempted = false;
+            if (exit_blocked) {
+                exit_blocked = false;
+                lcd_show_update_mode(maintenance_drive_ejected, false);
+            }
+        } else if (send_event == BUTTON_EVENT_PRESSED && button_released) {
+            tracking_hold = true;
+            hold_started_ms = now_ms;
+        }
+
+        if (button_down && tracking_hold && !exit_attempted &&
+            now_ms - hold_started_ms >= UPDATE_MODE_EXIT_HOLD_MS) {
+                exit_attempted = true;
+                tracking_hold = false;
+                if (!maintenance_sd_ready || maintenance_drive_ejected) {
+                    watchdog_hw->scratch[0] = UPDATE_MODE_REBOOT_MAGIC;
+                    watchdog_reboot(0, 0, 0);
+                    while (true) {
+                        tight_loop_contents();
+                    }
+                }
+                exit_blocked = true;
+                lcd_show_update_mode(maintenance_drive_ejected, true);
+        }
+
+        if (displayed_ejected != maintenance_drive_ejected) {
+            displayed_ejected = maintenance_drive_ejected;
+            if (!exit_blocked) {
+                lcd_show_update_mode(displayed_ejected, false);
+            }
+        }
+    }
+}
 
 static bool is_csv_file(const char *filename) {
     size_t length = strlen(filename);
@@ -400,9 +701,113 @@ static void led_blink_task_update(void) {
     led_blink_task.next_toggle_ms = now_ms + 100;
 }
 
+static bool is_csv_space(char character) {
+    return character == ' ' || character == '\t';
+}
+
+static char detect_csv_delimiter(const char *header) {
+    const char delimiters[] = {',', ';', '\t'};
+    size_t counts[sizeof(delimiters)] = {0};
+    bool quoted = false;
+
+    for (size_t i = 0; header[i] != '\0'; i++) {
+        if (header[i] == '"') {
+            if (quoted && header[i + 1] == '"') {
+                i++;
+            } else {
+                quoted = !quoted;
+            }
+        } else if (!quoted) {
+            for (size_t delimiter = 0; delimiter < sizeof(delimiters); delimiter++) {
+                if (header[i] == delimiters[delimiter]) {
+                    counts[delimiter]++;
+                    break;
+                }
+            }
+        }
+    }
+
+    size_t selected = 0;
+    for (size_t i = 1; i < sizeof(delimiters); i++) {
+        if (counts[i] > counts[selected]) {
+            selected = i;
+        }
+    }
+    return delimiters[selected];
+}
+
+static bool extract_csv_field(const char **cursor, char delimiter,
+                              char *field, size_t field_size,
+                              bool allow_empty, bool truncate) {
+    while (is_csv_space(**cursor)) {
+        (*cursor)++;
+    }
+
+    bool quoted = **cursor == '"';
+    bool closed = false;
+    if (quoted) {
+        (*cursor)++;
+    }
+
+    size_t length = 0;
+    bool too_long = false;
+    while (**cursor != '\0') {
+        char character = *(*cursor)++;
+        if (quoted && character == '"') {
+            if (**cursor == '"') {
+                (*cursor)++;
+                character = '"';
+            } else {
+                closed = true;
+                break;
+            }
+        } else if (!quoted && character == delimiter) {
+            break;
+        }
+
+        if (length < field_size - 1) {
+            field[length++] = character;
+        } else {
+            too_long = true;
+        }
+    }
+
+    if (quoted && !closed) {
+        return false;
+    }
+
+    if (quoted) {
+        while (is_csv_space(**cursor)) {
+            (*cursor)++;
+        }
+        if (**cursor != '\0' && **cursor != delimiter) {
+            return false;
+        }
+    }
+    if (**cursor == delimiter) {
+        (*cursor)++;
+    }
+
+    while (length > 0 && is_csv_space(field[length - 1])) {
+        length--;
+    }
+    field[length] = '\0';
+    return (truncate || !too_long) && (allow_empty || length > 0);
+}
+
+static bool extract_csv_fields(const char *line, char delimiter,
+                               char *description, size_t description_size,
+                               char *code, size_t code_size) {
+    const char *cursor = line;
+    return extract_csv_field(&cursor, delimiter, description,
+                             description_size, true, true) &&
+           extract_csv_field(&cursor, delimiter, code, code_size, false, false);
+}
+
 static bool load_assets_from_sd(const char *asset_name) {
-    selected_file_empty = false;
+    selected_file_has_no_codes = false;
     sd_missing = false;
+    invalid_csv_row_count = 0;
     sd_card_t *card = sd_get_by_num(0);
     if (card == NULL) {
         sd_missing = true;
@@ -430,36 +835,60 @@ static bool load_assets_from_sd(const char *asset_name) {
     output_line_count = 0;
     char line[MAX_CSV_LINE_LENGTH];
     bool header_skipped = false;
-    // Each CSV row is "description,code"; only the second column is typed.
+    char delimiter = ',';
+    // The header selects a delimiter; only the second field of each row is typed.
     while (output_line_count < MAX_OPTIONS_PER_ASSET &&
            f_gets(line, sizeof(line), &file) != NULL) {
-        if (!header_skipped) {
+        bool line_truncated = strchr(line, '\n') == NULL && !f_eof(&file);
+        bool header_row = !header_skipped;
+        if (header_row) {
+            if (strlen(line) >= 3 &&
+                (uint8_t)line[0] == 0xef &&
+                (uint8_t)line[1] == 0xbb &&
+                (uint8_t)line[2] == 0xbf) {
+                memmove(line, line + 3, strlen(line + 3) + 1);
+            }
+            delimiter = detect_csv_delimiter(line);
             header_skipped = true;
-            continue;
+        } else if (!line_truncated) {
+            char description[MAX_DESCRIPTION_LENGTH + 1];
+            char code[MAX_OPTION_LENGTH + 1];
+            line[strcspn(line, "\r\n")] = '\0';
+            if (extract_csv_fields(line, delimiter, description,
+                                   sizeof(description), code, sizeof(code))) {
+                memcpy(option_descriptions[output_line_count], description,
+                       strlen(description) + 1);
+                memcpy(output_lines[output_line_count], code, strlen(code) + 1);
+                output_line_count++;
+            } else {
+                invalid_csv_row_count++;
+            }
         }
-        char *separator = strchr(line, ',');
-        if (separator != NULL) {
-            *separator = '\0';
-        } else {
-            continue;
+
+        if (line_truncated) {
+            do {
+                if (f_gets(line, sizeof(line), &file) == NULL ||
+                    strchr(line, '\n') != NULL) {
+                    break;
+                }
+            } while (!f_eof(&file));
+            if (!header_row) {
+                invalid_csv_row_count++;
+            }
         }
-        char *code = separator + 1;
-        line[strcspn(line, "\r\n")] = '\0';
-        code[strcspn(code, "\r\n")] = '\0';
-        if (strlen(code) == 0 || strlen(code) > MAX_OPTION_LENGTH) {
-            continue;
-        }
-        strncpy(output_lines[output_line_count++], code, MAX_OPTION_LENGTH);
-        printf("Loaded option: %s\n", output_lines[output_line_count - 1]);
     }
     f_close(&file);
     f_unmount(card->pcName);
 
     if (output_line_count == 0) {
-        selected_file_empty = true;
-        printf("%s has no option codes\n", filename);
+        selected_file_has_no_codes = true;
+        printf("%s has no valid option codes (%u invalid rows)\n", filename,
+               (unsigned)invalid_csv_row_count);
         return false;
     }
+    printf("Loaded %u codes from %s; skipped %u invalid rows\n",
+           (unsigned)output_line_count, filename,
+           (unsigned)invalid_csv_row_count);
     return true;
 }
 
@@ -530,9 +959,8 @@ static bool character_to_key(char character, uint8_t *keycode, uint8_t *modifier
     return true;
 }
 
-static void start_selected_asset(void) {
-    keyboard_task_state.text = output_lines[0];
-    keyboard_task_state.line_index = 0;
+static void start_current_code(void) {
+    keyboard_task_state.text = output_lines[current_code_index];
     keyboard_task_state.character_index = 0;
     keyboard_task_state.sending_newline = false;
     keyboard_task_state.state = KEYBOARD_PRESS;
@@ -540,6 +968,12 @@ static void start_selected_asset(void) {
     codes_sending = true;
     codes_sent = false;
     lcd_show_asset();
+}
+
+static void start_selected_asset(void) {
+    current_code_index = 0;
+    manual_transfer_active = true;
+    start_current_code();
 }
 
 static void keyboard_task(void) {
@@ -556,17 +990,11 @@ static void keyboard_task(void) {
     if (task->state == KEYBOARD_PRESS) {
         if (task->text[task->character_index] == '\0') {
             if (task->sending_newline) {
-                // A completed line is followed by a newline, then the next code.
-                task->line_index++;
-                if (task->line_index >= output_line_count) {
-                    task->state = KEYBOARD_IDLE;
-                    codes_sending = false;
-                    codes_sent = true;
-                    lcd_show_asset();
-                    return;
-                }
-                task->text = output_lines[task->line_index];
-                task->sending_newline = false;
+                task->state = KEYBOARD_IDLE;
+                codes_sending = false;
+                codes_sent = current_code_index + 1 >= output_line_count;
+                lcd_show_asset();
+                return;
             } else {
                 task->text = "\n";
                 task->sending_newline = true;
@@ -621,12 +1049,25 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
 
 int main(void) {
     stdio_init_all();
-    tusb_init();
     gpio_init(STATUS_LED_PIN);
     gpio_set_dir(STATUS_LED_PIN, GPIO_OUT);
-    gpio_put(STATUS_LED_PIN, !lcd_ready);
+    gpio_put(STATUS_LED_PIN, 0);
+
+    initialize_button(SEND_BUTTON_PIN, &send_button_state);
+    initialize_button(NEXT_CHARACTER_BUTTON_PIN, &next_character_button_state);
+    initialize_button(MODALITY_BUTTON_PIN, &modality_button_state);
+    sleep_ms(50);
+    bool skip_update_mode = watchdog_hw->scratch[0] == UPDATE_MODE_REBOOT_MAGIC;
+    watchdog_hw->scratch[0] = 0;
+    maintenance_mode = !skip_update_mode && !gpio_get(SEND_BUTTON_PIN);
+    tusb_init();
+
     printf("Pico starting\n");
     lcd_init();
+    if (maintenance_mode) {
+        run_sd_update_mode();
+    }
+
     lcd_show_message("Initializing...");
     sleep_ms(500);
     lcd_show_message("Loading SD...");
@@ -638,20 +1079,6 @@ int main(void) {
 
     gpio_put(STATUS_LED_PIN, 0);
 
-    // Buttons are wired to ground, so the internal pull-ups make a press read low.
-    gpio_init(SEND_BUTTON_PIN);
-    gpio_set_dir(SEND_BUTTON_PIN, GPIO_IN);
-    gpio_pull_up(SEND_BUTTON_PIN);
-    gpio_init(NEXT_CHARACTER_BUTTON_PIN);
-    gpio_set_dir(NEXT_CHARACTER_BUTTON_PIN, GPIO_IN);
-    gpio_pull_up(NEXT_CHARACTER_BUTTON_PIN);
-    gpio_init(MODALITY_BUTTON_PIN);
-    gpio_set_dir(MODALITY_BUTTON_PIN, GPIO_IN);
-    gpio_pull_up(MODALITY_BUTTON_PIN);
-
-    bool button_latched = false;
-    bool next_character_latched = false;
-    bool modality_latched = false;
     uint32_t send_pressed_ms = 0;
     bool send_long_press_handled = false;
 
@@ -664,40 +1091,57 @@ int main(void) {
         update_sd_presence();
         led_blink_task_update();
 
-        // Convert active-low GPIO readings into the logical button state.
-        bool button_down = !gpio_get(SEND_BUTTON_PIN);
-        bool next_character_down = !gpio_get(NEXT_CHARACTER_BUTTON_PIN);
-        bool modality_down = !gpio_get(MODALITY_BUTTON_PIN);
-
         uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+        ButtonEvent send_event =
+            update_button(SEND_BUTTON_PIN, &send_button_state, now_ms);
+        ButtonEvent next_character_event =
+            update_button(NEXT_CHARACTER_BUTTON_PIN,
+                          &next_character_button_state, now_ms);
+        ButtonEvent modality_event =
+            update_button(MODALITY_BUTTON_PIN, &modality_button_state, now_ms);
+        bool button_down = send_button_state.stable_down;
 
         if (awaiting_asset_selection) {
             // The first SEND release leaves the startup screen and loads the default asset.
-            if (!button_down && button_latched) {
+            if (send_event == BUTTON_EVENT_RELEASED) {
                 awaiting_asset_selection = false;
                 assets_loaded = load_assets_from_sd(selected_asset_name);
                 lcd_show_asset();
             }
-            button_latched = button_down;
-            next_character_latched = next_character_down;
-            modality_latched = modality_down;
             continue;
         }
-        if (keyboard_task_state.state == KEYBOARD_IDLE) {
-            // Rising logical edges prevent a held button from repeating an action.
-            if (next_character_down && !next_character_latched) {
+        if (send_event == BUTTON_EVENT_PRESSED) {
+            send_pressed_ms = now_ms;
+            send_long_press_handled = false;
+        }
+        if (keyboard_task_state.state == KEYBOARD_IDLE && manual_transfer_active) {
+            if (button_down && !send_long_press_handled &&
+                now_ms - send_pressed_ms >= UPDATE_MODE_EXIT_HOLD_MS) {
+                manual_transfer_active = false;
+                codes_sent = false;
+                send_long_press_handled = true;
+                lcd_show_asset();
+            }
+            if (send_event == BUTTON_EVENT_RELEASED &&
+                !send_long_press_handled) {
+                if (codes_sent) {
+                    manual_transfer_active = false;
+                    codes_sent = false;
+                    lcd_show_asset();
+                } else if (current_code_index + 1 < output_line_count) {
+                    current_code_index++;
+                    start_current_code();
+                }
+            }
+        } else if (keyboard_task_state.state == KEYBOARD_IDLE) {
+            if (next_character_event == BUTTON_EVENT_PRESSED) {
                 increment_selected_digit();
             }
-            if (modality_down && !modality_latched) {
+            if (modality_event == BUTTON_EVENT_PRESSED) {
                 select_modality(1);
-            }
-            if (button_down && !button_latched) {
-                send_pressed_ms = now_ms;
-                send_long_press_handled = false;
             }
             if (button_down && !send_long_press_handled &&
                 now_ms - send_pressed_ms >= SEND_LONG_PRESS_MS) {
-                // A long press sends all loaded codes; without a valid file, signal an SD error.
                 if (assets_loaded) {
                     start_selected_asset();
                 } else {
@@ -705,14 +1149,11 @@ int main(void) {
                 }
                 send_long_press_handled = true;
             }
-            if (!button_down && button_latched && !send_long_press_handled) {
-                // A short SEND release advances the digit selected for editing.
+            if (send_event == BUTTON_EVENT_RELEASED &&
+                !send_long_press_handled) {
                 selected_digit_index = (selected_digit_index + 1) % 3;
                 lcd_show_asset();
             }
         }
-        button_latched = button_down;
-        next_character_latched = next_character_down;
-        modality_latched = modality_down;
     }
 }
