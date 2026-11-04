@@ -12,20 +12,20 @@
 #include <stdio.h>
 #include <string.h>
 
-#define SEND_BUTTON_PIN 22
-#define NEXT_CHARACTER_BUTTON_PIN 28
-#define MODALITY_BUTTON_PIN 20
+#define SEND_BUTTON_PIN 5
+#define NEXT_CHARACTER_BUTTON_PIN 6
+#define MODALITY_BUTTON_PIN 9
 #define STATUS_LED_PIN PICO_DEFAULT_LED_PIN
 #define MAX_OPTIONS_PER_ASSET 50
 #define MAX_OPTION_LENGTH 16
 #define MAX_DESCRIPTION_LENGTH 64
 #define MAX_CSV_LINE_LENGTH 256
 #define KEYBOARD_REPORT_DELAY_MS 10
-#define LCD_I2C i2c0
-#define LCD_SDA_PIN 4
-#define LCD_SCL_PIN 5
+#define LCD_I2C i2c1
+#define LCD_SDA_PIN 2
+#define LCD_SCL_PIN 3
 #define OLED_WIDTH 128
-#define OLED_PAGES 4
+#define OLED_PAGES 8
 #define SEND_LONG_PRESS_MS 800
 #define UPDATE_MODE_EXIT_HOLD_MS 3000
 #define UPDATE_MODE_REBOOT_MAGIC 0x53445550
@@ -76,7 +76,7 @@ static size_t selected_digit_index;
 static bool lcd_ready;
 static uint8_t lcd_address;
 
-// The OLED uses a command/data control byte before each I2C payload.
+// The SH1107 OLED uses a command/data control byte before each I2C payload.
 static void lcd_write_command(uint8_t value) {
     uint8_t packet[] = {0x00, value};
     i2c_write_blocking(LCD_I2C, lcd_address, packet, sizeof(packet), false);
@@ -172,7 +172,7 @@ static void lcd_write_asset_name(void) {
 
     uint8_t x = (uint8_t)((OLED_WIDTH - length * 12) / 2);
     for (uint8_t page = 0; page < 2; page++) {
-        lcd_set_cursor(x, page);
+        lcd_set_cursor(x, (uint8_t)(page + 1));
         for (size_t i = 0; i < length; i++) {
             const uint8_t *glyph = lcd_glyph(selected_asset_name[i]);
             bool selected_digit = !manual_transfer_active &&
@@ -220,18 +220,17 @@ static void lcd_init(void) {
     printf("OLED found at 0x%02X\n", lcd_address);
     sleep_ms(50);
     lcd_write_command(0xae);
-    lcd_write_command(0xd5); lcd_write_command(0x80);
-    lcd_write_command(0xa8); lcd_write_command(0x1f);
-    lcd_write_command(0xd3); lcd_write_command(0x00);
-    lcd_write_command(0x40);
-    lcd_write_command(0x8d); lcd_write_command(0x14);
-    lcd_write_command(0x20); lcd_write_command(0x00);
-    lcd_write_command(0xa1);
-    lcd_write_command(0xc8);
-    lcd_write_command(0xda); lcd_write_command(0x02);
-    lcd_write_command(0x81); lcd_write_command(0x7f);
-    lcd_write_command(0xd9); lcd_write_command(0xf1);
-    lcd_write_command(0xdb); lcd_write_command(0x40);
+    lcd_write_command(0xd5); lcd_write_command(0x51);
+    lcd_write_command(0x20);
+    lcd_write_command(0x81); lcd_write_command(0x4f);
+    lcd_write_command(0xad); lcd_write_command(0x8a);
+    lcd_write_command(0xa0);
+    lcd_write_command(0xc0);
+    lcd_write_command(0xdc); lcd_write_command(0x00);
+    lcd_write_command(0xd3); lcd_write_command(0x60);
+    lcd_write_command(0xd9); lcd_write_command(0x22);
+    lcd_write_command(0xdb); lcd_write_command(0x35);
+    lcd_write_command(0xa8); lcd_write_command(0x3f);
     lcd_write_command(0xa4);
     lcd_write_command(0xa6);
     lcd_write_command(0xaf);
@@ -277,7 +276,7 @@ static void lcd_show_message(const char *message) {
         return;
     }
     lcd_clear();
-    lcd_write_centered_text(message, 1);
+    lcd_write_centered_text(message, 3);
 }
 
 static void lcd_show_asset_count(void) {
@@ -289,9 +288,9 @@ static void lcd_show_asset_count(void) {
     snprintf(count_message, sizeof(count_message), "Assets: %u",
              (unsigned)asset_file_count);
     lcd_write_centered_text("FUJIFILM Healthcare", 0);
-    lcd_write_centered_text("MR Option Loader", 1);
-    lcd_write_centered_text(count_message, 2);
-    lcd_write_centered_text("Press button", 3);
+    lcd_write_centered_text("MR Option Loader", 2);
+    lcd_write_centered_text(count_message, 4);
+    lcd_write_centered_text("Press C to start", 6);
 }
 
 static void lcd_show_update_mode(bool drive_ejected, bool eject_required) {
@@ -301,17 +300,17 @@ static void lcd_show_update_mode(bool drive_ejected, bool eject_required) {
     lcd_clear();
     lcd_write_centered_text("SD UPDATE MODE", 0);
     if (!maintenance_sd_ready) {
-        lcd_write_centered_text("SD card unavailable", 1);
-        lcd_write_centered_text("Check card and reset", 3);
+        lcd_write_centered_text("SD card unavailable", 2);
+        lcd_write_centered_text("Check card and reset", 6);
         return;
     }
-    lcd_write_centered_text("Edit CSV on computer", 1);
+    lcd_write_centered_text("Edit CSV on computer", 2);
     const char *drive_status = eject_required
                                    ? "Eject drive first"
                                    : drive_ejected ? "Drive ejected"
                                                    : "Safely eject drive";
-    lcd_write_centered_text(drive_status, 2);
-    lcd_write_centered_text("Hold SEND 3 seconds", 3);
+    lcd_write_centered_text(drive_status, 4);
+    lcd_write_centered_text("Hold C 3 seconds", 6);
 }
 
 static void format_description(char *output, size_t output_size,
@@ -379,7 +378,7 @@ static void lcd_show_asset(void) {
     if (status_length > OLED_WIDTH / 6) {
         status_length = OLED_WIDTH / 6;
     }
-    lcd_set_cursor((uint8_t)((OLED_WIDTH - status_length * 6) / 2), 3);
+    lcd_set_cursor((uint8_t)((OLED_WIDTH - status_length * 6) / 2), 6);
     lcd_write_text(status);
 }
 
@@ -1062,7 +1061,7 @@ int main(void) {
     maintenance_mode = !skip_update_mode && !gpio_get(SEND_BUTTON_PIN);
     tusb_init();
 
-    printf("Pico starting\n");
+    printf("Feather RP2040 Adalogger starting\n");
     lcd_init();
     if (maintenance_mode) {
         run_sd_update_mode();
@@ -1077,7 +1076,7 @@ int main(void) {
     printf("Startup complete\n");
     lcd_show_asset_count();
 
-    gpio_put(STATUS_LED_PIN, 0);
+    gpio_put(STATUS_LED_PIN, !lcd_ready);
 
     uint32_t send_pressed_ms = 0;
     bool send_long_press_handled = false;

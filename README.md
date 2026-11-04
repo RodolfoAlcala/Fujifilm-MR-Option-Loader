@@ -1,44 +1,42 @@
 # FUJIFILM MR Option Loader
 
-RP2040 firmware that reads option codes from a microSD card and types them into a USB host as a HID keyboard. It uses a 128x32 SSD1306-compatible I2C OLED for status and three buttons for selecting and sending codes.
+RP2040 firmware that reads option codes from a microSD card and types them into a USB host as a HID keyboard. It targets the Adafruit Feather RP2040 Adalogger stacked with the 128x64 SH1107 OLED FeatherWing.
 
 ## Hardware
 
-The firmware targets the original Raspberry Pi Pico. Connect the peripherals to the Pico as follows.
+The firmware targets the Adafruit Feather RP2040 Adalogger and OLED FeatherWing. The FeatherWing uses the Feather I2C pins, and the Adalogger provides the onboard microSD slot.
 
 ### OLED
 
-Use a 128x32 SSD1306-compatible I2C display. The firmware uses I2C0 and probes addresses `0x3C` and `0x3D`.
+The 128x64 SH1107 display uses I2C1 on the Feather's SDA/SCL pins. The firmware probes addresses `0x3C` and `0x3D`.
 
-| Display | Pico |
+| FeatherWing | Feather RP2040 Adalogger |
 | --- | --- |
-| SDA | GP4 |
-| SCL/SCK | GP5 |
-| VCC | 3V3(OUT) |
+| SDA | GP2 |
+| SCL | GP3 |
+| VCC | 3V |
 | GND | GND |
 
-### microSD breakout
+### microSD
 
-The breakout is used in SPI mode. Leave DAT1-DAT3 unconnected.
+The onboard microSD slot is used in SPI mode.
 
-| Breakout | Pico |
+| Adalogger SD signal | GPIO |
 | --- | --- |
-| 3V | 3V3(OUT) |
-| GND | GND |
-| CLK | GP18 |
-| CMD | GP19 |
-| DAT0 | GP16 |
-| CS | GP17 |
+| SCK | GP18 |
+| MOSI | GP19 |
+| MISO | GP20 |
+| CS | GP23 |
 
 ### Buttons
 
-Connect one side of each normally-open button to its GPIO and the other side to GND. The firmware enables internal pull-ups, so a pressed button reads low.
+The OLED FeatherWing buttons are active-low and use the Feather's internal pull-ups.
 
-| Button | Pico |
-| --- | --- |
-| SEND/SELECT | GP22 |
-| Next-character | GP28 (physical pin 34) |
-| Modality | GP20 |
+| FeatherWing button | Function | GPIO |
+| --- | --- | --- |
+| A | Modality | GP9 |
+| B | Next digit | GP6 |
+| C | Send/select | GP5 |
 
 ## microSD files
 
@@ -55,29 +53,29 @@ If the OLED reports `No valid codes`, check that the file has a header, has at l
 
 ## Controls
 
-- On startup, the OLED shows the number of CSV files found. Press and release SEND/SELECT to enter asset selection.
-- Press Next-character to increment the currently selected digit. Digits wrap from 9 to 0.
-- Press SEND/SELECT briefly to move the digit selection.
+- On startup, the OLED shows the number of CSV files found. Press and release C to enter asset selection.
+- Press B to increment the currently selected digit. Digits wrap from 9 to 0.
+- Press C briefly to move the digit selection.
 - Button inputs are debounced so one press advances once.
 - The asset name is displayed at double size. The selected digit is shown as a reversed-color block and identified as `Digit 1/3`, `Digit 2/3`, or `Digit 3/3`.
-- Press Modality to cycle through `M`, `OV`, `SY`, and `Y`.
-- Hold SEND/SELECT for at least 800 ms to start sending the selected file. The Pico types one code, then waits for you to check the host before continuing.
-- The OLED shows the code being typed and its CSV description instead of a `SEND next` prompt. After checking the host (and clearing a rejected entry yourself if needed), briefly press SEND/SELECT to send the next code. Descriptions longer than the display line are shortened with an ellipsis.
-- After the last code, briefly press SEND/SELECT to return to asset selection. While waiting between codes, hold SEND/SELECT for 3 seconds to cancel the transfer.
+- Press A to cycle through modalities `M`, `OV`, `SY`, and `Y`.
+- Hold C for at least 800 ms to start sending the selected file. The Feather types one code, then waits for you to check the host before continuing.
+- The OLED shows the code being typed and its CSV description. After checking the host (and clearing a rejected entry yourself if needed), briefly press C to send the next code. Descriptions longer than the display line are shortened with an ellipsis.
+- After the last code, briefly press C to return to asset selection. While waiting between codes, hold C for 3 seconds to cancel the transfer.
 
-The Pico cannot determine whether the host application accepted a code; use the code shown on the OLED to identify an entry that needs follow-up.
+The firmware cannot determine whether the host application accepted a code; use the code shown on the OLED to identify an entry that needs follow-up.
 
 ## Update files on the microSD card
 
 1. Disconnect USB power.
-2. Hold SEND/SELECT (GP22) while reconnecting the Pico over USB.
-3. The Pico starts in SD update mode and exposes the card as a USB drive. Edit or copy CSV files on the computer.
+2. Hold C (GP5) while reconnecting the Feather over USB.
+3. The Feather starts in SD update mode and exposes the card as a USB drive. Edit or copy CSV files on the computer.
 4. Safely eject the drive from the computer before rebooting.
-5. Safely eject the USB drive and wait for the OLED to show `Drive ejected`. Release SEND/SELECT, then hold it for 3 seconds. The Pico reboots into normal keyboard mode. If the OLED shows `Eject drive first`, eject the drive from the computer and try again.
+5. Safely eject the USB drive and wait for the OLED to show `Drive ejected`. Release C, then hold it for 3 seconds. The Feather reboots into normal keyboard mode. If the OLED shows `Eject drive first`, eject the drive from the computer and try again.
 
-Do not edit the card from the computer while the Pico is running in normal mode. The firmware accesses the same card directly in that mode.
+Do not edit the card from the computer while the Feather is running in normal mode. The firmware accesses the same card directly in that mode.
 
-The onboard LED stays on when the OLED does not respond at either supported I2C address. It turns off when a display responds. The firmware retries OLED detection once per second.
+The Feather's onboard LED stays on when the OLED does not respond at either supported I2C address. It turns off when a display responds. The firmware retries OLED detection once per second.
 
 ## Build
 
@@ -87,17 +85,17 @@ Set `PICO_SDK_PATH` to the SDK directory, then configure and build:
 
 ```sh
 cmake --preset default -DPICO_SDK_PATH=/path/to/pico-sdk
-cmake --build build
+cmake --build build/feather-adalogger
 ```
 
-The UF2 file is generated at `build/FUJIFILM_MR_Option_Loader.uf2`.
+The UF2 file is generated at `build/feather-adalogger/FUJIFILM_MR_Option_Loader.uf2`. The default CMake preset targets `adafruit_feather_rp2040_adalogger`.
 
 ## Flash
 
-1. Hold BOOTSEL while connecting the Pico over USB.
-2. Copy `build/FUJIFILM_MR_Option_Loader.uf2` to the `RPI-RP2` drive.
-3. Reconnect the Pico normally.
+1. Hold BOOT while connecting the Feather over USB.
+2. Copy `build/feather-adalogger/FUJIFILM_MR_Option_Loader.uf2` to the `RPI-RP2` drive.
+3. Reconnect the Feather normally.
 
-In normal firmware mode, the Pico enumerates as a USB HID keyboard named `Pico Keyboard`; in SD update mode, it enumerates as a USB mass-storage device. Neither mode exposes a serial/COM port. `RPI-RP2` is only available in BOOTSEL mode. Before sending codes, select the intended application and input field on the host.
+In normal firmware mode, the Feather enumerates as a USB HID keyboard named `Pico Keyboard`; in SD update mode, it enumerates as a USB mass-storage device. Neither mode exposes a serial/COM port. `RPI-RP2` is only available in BOOT mode. Before sending codes, select the intended application and input field on the host.
 
-See [HARDWARE_DESIGN.md](./HARDWARE_DESIGN.md) for the carrier-board and enclosure design notes.
+See [HARDWARE_DESIGN.md](./HARDWARE_DESIGN.md) for the hardware pin map and enclosure notes.

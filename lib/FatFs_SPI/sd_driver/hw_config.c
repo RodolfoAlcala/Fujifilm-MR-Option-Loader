@@ -5,7 +5,7 @@
 static spi_t spis[] = {
     {
         .hw_inst = spi0,
-        .miso_gpio = 16,
+        .miso_gpio = 20,
         .mosi_gpio = 19,
         .sck_gpio = 18,
         .baud_rate = 12 * 1000 * 1000,
@@ -16,7 +16,7 @@ static sd_card_t sd_cards[] = {
     {
         .pcName = "0:",
         .spi = &spis[0],
-        .ss_gpio = 17,
+        .ss_gpio = 23,
         .use_card_detect = false,
         .card_detect_gpio = 0,
         .card_detected_true = 1,

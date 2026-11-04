@@ -3,11 +3,14 @@
     "configurePresets": [
         {
             "name": "default",
-            "displayName": "Pico SDK Debug",
+            "displayName": "Feather RP2040 Adalogger Debug",
             "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build",
+            "binaryDir": "${sourceDir}/build/feather-adalogger",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug"
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "PICO_SDK_PATH": "$env{USERPROFILE}/.pico-sdk/sdk/2.3.1",
+                "PICO_BOARD": "adafruit_feather_rp2040_adalogger"
             }
         }
     ]
