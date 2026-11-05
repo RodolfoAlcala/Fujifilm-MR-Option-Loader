@@ -92,6 +92,12 @@ cmake --build build
 
 The UF2 file is generated at `build/FUJIFILM_MR_Option_Loader.uf2`.
 
+### VS Code IntelliSense
+
+The C/C++ extension reads the actual compiler flags and include paths from CMake's `build/compile_commands.json`; SDK paths are not hard-coded. Open the repository root in VS Code with `PICO_SDK_PATH` set to the Pico SDK directory. CMake is configured automatically when the folder opens.
+
+If IntelliSense shows unresolved Pico SDK headers, run **CMake: Configure** to regenerate the compile database. After moving the checkout or changing SDK/compiler versions, run **CMake: Delete Cache and Reconfigure** once, then reload the VS Code window if the red underlines remain.
+
 ## Flash
 
 1. Hold BOOTSEL while connecting the Pico over USB.
