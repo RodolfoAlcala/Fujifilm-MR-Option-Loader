@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
+// Firmware limits, hardware pins, and protocol values for the target Feather.
 #define SEND_BUTTON_PIN 5
 #define NEXT_CHARACTER_BUTTON_PIN 6
 #define MODALITY_BUTTON_PIN 9
@@ -20,12 +21,17 @@
 #define MAX_OPTION_LENGTH 16
 #define MAX_DESCRIPTION_LENGTH 64
 #define MAX_CSV_LINE_LENGTH 256
+// Delay between HID key press/release reports.
 #define KEYBOARD_REPORT_DELAY_MS 10
 #define LCD_I2C i2c1
 #define LCD_SDA_PIN 2
 #define LCD_SCL_PIN 3
 #define OLED_WIDTH 128
-#define OLED_PAGES 8
+#define OLED_HEIGHT 64
+#define OLED_RAM_WIDTH 64
+#define OLED_RAM_PAGES 16
+#define OLED_FRAMEBUFFER_SIZE (OLED_RAM_WIDTH * OLED_RAM_PAGES)
+// Button hold thresholds and the watchdog marker used to leave update mode.
 #define SEND_LONG_PRESS_MS 800
 #define UPDATE_MODE_EXIT_HOLD_MS 3000
 #define UPDATE_MODE_REBOOT_MAGIC 0x53445550
@@ -33,14 +39,17 @@
 #define SCSI_CMD_SYNCHRONIZE_CACHE_10 0x35
 #define OLED_ADDRESS_PRIMARY 0x3c
 
+// Selects the USB descriptor set and runtime behavior during initialization.
 bool maintenance_mode;
 
+// ButtonState tracks both the sampled input and its debounced logical state.
 typedef struct {
     bool raw_down;
     bool stable_down;
     uint32_t raw_changed_ms;
 } ButtonState;
 
+// ButtonEvent distinguishes stable press/release edges from unchanged input.
 typedef enum {
     BUTTON_EVENT_NONE,
     BUTTON_EVENT_PRESSED,
@@ -49,6 +58,7 @@ typedef enum {
 
 #define BUTTON_DEBOUNCE_MS 30
 
+// Loaded asset data and current selection/transfer state.
 static char output_lines[MAX_OPTIONS_PER_ASSET][MAX_OPTION_LENGTH + 1];
 static char option_descriptions[MAX_OPTIONS_PER_ASSET][MAX_DESCRIPTION_LENGTH + 1];
 static size_t output_line_count;
@@ -66,6 +76,7 @@ static bool maintenance_sd_ready;
 static bool maintenance_drive_ejected;
 static uint32_t maintenance_sector_count;
 static uint8_t maintenance_sector_buffer[SD_SECTOR_SIZE];
+// Debounced state for the three FeatherWing buttons.
 static ButtonState send_button_state;
 static ButtonState next_character_button_state;
 static ButtonState modality_button_state;
@@ -75,34 +86,68 @@ static char selected_asset_name[16] = "SY629";
 static size_t selected_digit_index;
 static bool lcd_ready;
 static uint8_t lcd_address;
+// The SH1107 stores a 128x64 panel as 64 columns across 16 pages.
+static uint8_t lcd_framebuffer[OLED_FRAMEBUFFER_SIZE];
+// Drawing helpers use logical 128x64 coordinates before mapping into SH1107 RAM.
+static uint8_t lcd_cursor_x;
+static uint8_t lcd_cursor_page;
 
-// The SH1107 OLED uses a command/data control byte before each I2C payload.
+// Send one SH1107 command using the I2C command control byte.
 static void lcd_write_command(uint8_t value) {
     uint8_t packet[] = {0x00, value};
     i2c_write_blocking(LCD_I2C, lcd_address, packet, sizeof(packet), false);
 }
 
-static void lcd_write_data(uint8_t value) {
-    uint8_t packet[] = {0x40, value};
-    i2c_write_blocking(LCD_I2C, lcd_address, packet, sizeof(packet), false);
-}
-
+// Set the cursor used by the logical framebuffer drawing routines.
 static void lcd_set_cursor(uint8_t x, uint8_t y) {
-    lcd_write_command((uint8_t)(0xb0 | y));
-    lcd_write_command((uint8_t)(x & 0x0f));
-    lcd_write_command((uint8_t)(0x10 | (x >> 4)));
+    lcd_cursor_x = x;
+    lcd_cursor_page = y;
 }
 
-static void lcd_clear(void) {
-    for (uint8_t page = 0; page < OLED_PAGES; page++) {
-        lcd_set_cursor(0, page);
-        for (size_t i = 0; i < OLED_WIDTH; i++) {
-            lcd_write_data(0);
+// Map one vertical glyph byte into the rotated SH1107 framebuffer.
+static void lcd_write_data(uint8_t value) {
+    uint8_t logical_y = (uint8_t)(lcd_cursor_page * 8);
+    for (uint8_t bit = 0; bit < 8; bit++) {
+        uint8_t y = (uint8_t)(logical_y + bit);
+        if (lcd_cursor_x < OLED_WIDTH && y < OLED_HEIGHT) {
+            // Logical (x, y) maps to RAM page x/8, bit x%8, column 63-y.
+            uint8_t ram_column = (uint8_t)(OLED_RAM_WIDTH - 1 - y);
+            uint8_t ram_page = (uint8_t)(lcd_cursor_x / 8);
+            uint8_t ram_bit = (uint8_t)(lcd_cursor_x % 8);
+            size_t index = (size_t)ram_page * OLED_RAM_WIDTH + ram_column;
+            uint8_t mask = (uint8_t)(1u << ram_bit);
+            if ((value & (1u << bit)) != 0) {
+                lcd_framebuffer[index] |= mask;
+            } else {
+                lcd_framebuffer[index] &= (uint8_t)~mask;
+            }
         }
     }
+    lcd_cursor_x++;
+}
+
+// Transfer the complete framebuffer to all SH1107 RAM pages.
+static void lcd_flush(void) {
+    uint8_t packet[OLED_RAM_WIDTH + 1];
+    packet[0] = 0x40;
+    for (uint8_t page = 0; page < OLED_RAM_PAGES; page++) {
+        lcd_write_command((uint8_t)(0xb0 | page));
+        lcd_write_command(0x00);
+        lcd_write_command(0x10);
+        // Send one control byte followed by this page's 64 display bytes.
+        memcpy(packet + 1, lcd_framebuffer + (size_t)page * OLED_RAM_WIDTH,
+               OLED_RAM_WIDTH);
+        i2c_write_blocking(LCD_I2C, lcd_address, packet, sizeof(packet), false);
+    }
+}
+
+// Clear the framebuffer and reset the logical drawing cursor.
+static void lcd_clear(void) {
+    memset(lcd_framebuffer, 0, sizeof(lcd_framebuffer));
     lcd_set_cursor(0, 0);
 }
 
+// Return the five-column bitmap for a supported character, case-insensitively.
 static const uint8_t *lcd_glyph(char character) {
     static const char characters[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-/: ";
     static const uint8_t glyphs[][5] = {
@@ -138,6 +183,7 @@ static const uint8_t *lcd_glyph(char character) {
     return glyphs[sizeof(glyphs) / sizeof(glyphs[0]) - 1];
 }
 
+// Draw a clipped, single-size text string at the current logical cursor.
 static void lcd_write_text(const char *text) {
     size_t length = strlen(text);
     if (length > OLED_WIDTH / 6) {
@@ -152,6 +198,7 @@ static void lcd_write_text(const char *text) {
     }
 }
 
+// Center a single-size text string on the specified logical page.
 static void lcd_write_centered_text(const char *text, uint8_t page) {
     size_t length = strlen(text);
     if (length > OLED_WIDTH / 6) {
@@ -161,6 +208,7 @@ static void lcd_write_centered_text(const char *text, uint8_t page) {
     lcd_write_text(text);
 }
 
+// Draw the selected asset name at double size and invert the active digit.
 static void lcd_write_asset_name(void) {
     size_t length = strlen(selected_asset_name);
     size_t number_start = 0;
@@ -199,8 +247,9 @@ static void lcd_write_asset_name(void) {
     }
 }
 
+// Initialize I2C, find the OLED, configure its controller, and clear the panel.
 static void lcd_init(void) {
-    i2c_init(LCD_I2C, 400 * 1000);
+    i2c_init(LCD_I2C, 100 * 1000);
     gpio_set_function(LCD_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(LCD_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(LCD_SDA_PIN);
@@ -219,27 +268,28 @@ static void lcd_init(void) {
     lcd_ready = true;
     printf("OLED found at 0x%02X\n", lcd_address);
     sleep_ms(50);
+    // Configure the SH1107 FeatherWing, matching its 64x128 controller RAM.
     lcd_write_command(0xae);
-    lcd_write_command(0xd5); lcd_write_command(0x51);
-    lcd_write_command(0x20);
+    lcd_write_command(0xdc); lcd_write_command(0x00);
     lcd_write_command(0x81); lcd_write_command(0x4f);
-    lcd_write_command(0xad); lcd_write_command(0x8a);
+    lcd_write_command(0x20);
     lcd_write_command(0xa0);
     lcd_write_command(0xc0);
-    lcd_write_command(0xdc); lcd_write_command(0x00);
+    lcd_write_command(0xa8); lcd_write_command(0x3f);
     lcd_write_command(0xd3); lcd_write_command(0x60);
     lcd_write_command(0xd9); lcd_write_command(0x22);
     lcd_write_command(0xdb); lcd_write_command(0x35);
-    lcd_write_command(0xa8); lcd_write_command(0x3f);
     lcd_write_command(0xa4);
     lcd_write_command(0xa6);
     lcd_write_command(0xaf);
     lcd_clear();
+    lcd_flush();
 }
 
 static void lcd_show_asset_count(void);
 static void lcd_show_asset(void);
 
+// Periodically detect OLED disconnects and redraw the current screen on recovery.
 static void update_lcd_presence(void) {
     static uint32_t next_check_ms;
     uint32_t now_ms = to_ms_since_boot(get_absolute_time());
@@ -271,14 +321,17 @@ static void update_lcd_presence(void) {
     }
 }
 
+// Replace the display contents with one centered status message.
 static void lcd_show_message(const char *message) {
     if (!lcd_ready) {
         return;
     }
     lcd_clear();
     lcd_write_centered_text(message, 3);
+    lcd_flush();
 }
 
+// Show startup branding, the discovered asset count, and the selection prompt.
 static void lcd_show_asset_count(void) {
     if (!lcd_ready) {
         return;
@@ -291,8 +344,10 @@ static void lcd_show_asset_count(void) {
     lcd_write_centered_text("MR Option Loader", 2);
     lcd_write_centered_text(count_message, 4);
     lcd_write_centered_text("Press C to start", 6);
+    lcd_flush();
 }
 
+// Show SD update instructions and the current eject/exit status.
 static void lcd_show_update_mode(bool drive_ejected, bool eject_required) {
     if (!lcd_ready) {
         return;
@@ -302,6 +357,7 @@ static void lcd_show_update_mode(bool drive_ejected, bool eject_required) {
     if (!maintenance_sd_ready) {
         lcd_write_centered_text("SD card unavailable", 2);
         lcd_write_centered_text("Check card and reset", 6);
+        lcd_flush();
         return;
     }
     lcd_write_centered_text("Edit CSV on computer", 2);
@@ -311,8 +367,10 @@ static void lcd_show_update_mode(bool drive_ejected, bool eject_required) {
                                                    : "Safely eject drive";
     lcd_write_centered_text(drive_status, 4);
     lcd_write_centered_text("Hold C 3 seconds", 6);
+    lcd_flush();
 }
 
+// Copy a description into a display-sized buffer, adding an ellipsis if needed.
 static void format_description(char *output, size_t output_size,
                                const char *description) {
     size_t length = strlen(description);
@@ -330,6 +388,7 @@ static void format_description(char *output, size_t output_size,
     output[max_length] = '\0';
 }
 
+// Redraw the asset selection or transfer status screen.
 static void lcd_show_asset(void) {
     if (!lcd_ready) {
         return;
@@ -380,9 +439,11 @@ static void lcd_show_asset(void) {
     }
     lcd_set_cursor((uint8_t)((OLED_WIDTH - status_length * 6) / 2), 6);
     lcd_write_text(status);
+    lcd_flush();
 }
 
 typedef enum {
+    // The HID task alternates key presses and releases without blocking.
     KEYBOARD_IDLE,
     KEYBOARD_PRESS,
     KEYBOARD_RELEASE
@@ -398,12 +459,15 @@ typedef struct {
 
 static KeyboardTask keyboard_task_state = {0};
 
+// Load and validate an asset CSV file from the microSD card.
 static bool load_assets_from_sd(const char *asset_name);
 
+// Return the configured SD card only while update mode has initialized it.
 static sd_card_t *maintenance_card(void) {
     return maintenance_sd_ready ? sd_get_by_num(0) : NULL;
 }
 
+// Initialize the raw SD interface and cache its capacity for USB mass storage.
 static bool initialize_maintenance_card(void) {
     sd_card_t *card = sd_get_by_num(0);
     if (card == NULL || !sd_init_driver() || card->init == NULL) {
@@ -422,6 +486,7 @@ static bool initialize_maintenance_card(void) {
     return maintenance_sector_count != 0;
 }
 
+// Report the device identity requested by the USB host in update mode.
 void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8],
                         uint8_t product_id[16], uint8_t product_rev[4]) {
     (void)lun;
@@ -433,16 +498,19 @@ void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8],
     memcpy(product_rev, "1.0", 3);
 }
 
+// Tell the USB host whether the SD-backed logical unit is available.
 bool tud_msc_test_unit_ready_cb(uint8_t lun) {
     return lun == 0 && maintenance_sd_ready && !maintenance_drive_ejected;
 }
 
+// Report the SD card's block count and sector size to the USB host.
 void tud_msc_capacity_cb(uint8_t lun, uint32_t *block_count,
                          uint16_t *block_size) {
     *block_count = lun == 0 ? maintenance_sector_count : 0;
     *block_size = lun == 0 ? SD_SECTOR_SIZE : 0;
 }
 
+// Read the requested byte range from one SD sector for USB mass storage.
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
                           void *buffer, uint32_t bufsize) {
     sd_card_t *card = maintenance_card();
@@ -457,6 +525,7 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
     return (int32_t)bufsize;
 }
 
+// Preserve untouched sector bytes while applying a partial USB sector write.
 int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
                            uint8_t *buffer, uint32_t bufsize) {
     sd_card_t *card = maintenance_card();
@@ -476,6 +545,7 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
     return (int32_t)bufsize;
 }
 
+// Accept cache synchronization and reject unsupported SCSI commands.
 int32_t tud_msc_scsi_cb(uint8_t lun, uint8_t const scsi_cmd[16],
                         void *buffer, uint16_t bufsize) {
     (void)buffer;
@@ -488,6 +558,7 @@ int32_t tud_msc_scsi_cb(uint8_t lun, uint8_t const scsi_cmd[16],
     return -1;
 }
 
+// Track host eject requests so firmware does not reboot before safe removal.
 bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition,
                            bool start, bool load_eject) {
     (void)power_condition;
@@ -500,6 +571,7 @@ bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition,
     return true;
 }
 
+// Configure an active-low button with the RP2040's internal pull-up.
 static void initialize_button(uint pin, ButtonState *state) {
     gpio_init(pin);
     gpio_set_dir(pin, GPIO_IN);
@@ -509,6 +581,7 @@ static void initialize_button(uint pin, ButtonState *state) {
     state->raw_changed_ms = to_ms_since_boot(get_absolute_time());
 }
 
+// Debounce a button sample and return an edge event when its stable state changes.
 static ButtonEvent update_button(uint pin, ButtonState *state,
                                  uint32_t now_ms) {
     bool raw_down = !gpio_get(pin);
@@ -526,6 +599,7 @@ static ButtonEvent update_button(uint pin, ButtonState *state,
     return BUTTON_EVENT_NONE;
 }
 
+// Serve the SD card over USB and permit exit only after the host ejects it.
 static void run_sd_update_mode(void) {
     maintenance_sd_ready = initialize_maintenance_card();
     gpio_put(STATUS_LED_PIN, !maintenance_sd_ready || !lcd_ready);
@@ -558,6 +632,7 @@ static void run_sd_update_mode(void) {
             hold_started_ms = now_ms;
         }
 
+        // Exit only when the card is unavailable or the host has ejected the drive.
         if (button_down && tracking_hold && !exit_attempted &&
             now_ms - hold_started_ms >= UPDATE_MODE_EXIT_HOLD_MS) {
                 exit_attempted = true;
@@ -582,6 +657,7 @@ static void run_sd_update_mode(void) {
     }
 }
 
+// Recognize CSV filenames without depending on extension letter case.
 static bool is_csv_file(const char *filename) {
     size_t length = strlen(filename);
     if (length < 4 || filename[length - 4] != '.') {
@@ -592,6 +668,7 @@ static bool is_csv_file(const char *filename) {
            (filename[length - 1] == 'V' || filename[length - 1] == 'v');
 }
 
+// Count root-level CSV files and update the SD-card availability state.
 static size_t count_asset_files_on_sd(void) {
     sd_card_t *card = sd_get_by_num(0);
     if (card == NULL) {
@@ -630,6 +707,7 @@ static size_t count_asset_files_on_sd(void) {
     return count;
 }
 
+// Poll for card removal or insertion without remounting during active operations.
 static void update_sd_presence(void) {
     static uint32_t next_check_ms;
     uint32_t now_ms = to_ms_since_boot(get_absolute_time());
@@ -673,6 +751,7 @@ typedef struct {
 
 static LedBlinkTask led_blink_task = {0};
 
+// Start the short status-LED pattern used when an asset cannot be loaded.
 static void start_sd_error_blink(void) {
     gpio_put(STATUS_LED_PIN, 1);
     led_blink_task.toggles_remaining = 7;
@@ -680,6 +759,7 @@ static void start_sd_error_blink(void) {
         to_ms_since_boot(get_absolute_time()) + 100;
 }
 
+// Advance the SD error blink without blocking USB or button servicing.
 static void led_blink_task_update(void) {
     if (led_blink_task.toggles_remaining == 0) {
         return;
@@ -700,10 +780,12 @@ static void led_blink_task_update(void) {
     led_blink_task.next_toggle_ms = now_ms + 100;
 }
 
+// Identify whitespace allowed around CSV fields and delimiters.
 static bool is_csv_space(char character) {
     return character == ' ' || character == '\t';
 }
 
+// Choose the most common supported delimiter in the CSV header, ignoring quotes.
 static char detect_csv_delimiter(const char *header) {
     const char delimiters[] = {',', ';', '\t'};
     size_t counts[sizeof(delimiters)] = {0};
@@ -735,6 +817,7 @@ static char detect_csv_delimiter(const char *header) {
     return delimiters[selected];
 }
 
+// Parse one CSV field, supporting quoted values and optional truncation.
 static bool extract_csv_field(const char **cursor, char delimiter,
                               char *field, size_t field_size,
                               bool allow_empty, bool truncate) {
@@ -753,6 +836,7 @@ static bool extract_csv_field(const char **cursor, char delimiter,
     while (**cursor != '\0') {
         char character = *(*cursor)++;
         if (quoted && character == '"') {
+            // CSV represents a literal quote inside a quoted field as "".
             if (**cursor == '"') {
                 (*cursor)++;
                 character = '"';
@@ -794,6 +878,7 @@ static bool extract_csv_field(const char **cursor, char delimiter,
     return (truncate || !too_long) && (allow_empty || length > 0);
 }
 
+// Extract the description and code columns from a CSV record.
 static bool extract_csv_fields(const char *line, char delimiter,
                                char *description, size_t description_size,
                                char *code, size_t code_size) {
@@ -803,6 +888,7 @@ static bool extract_csv_fields(const char *line, char delimiter,
            extract_csv_field(&cursor, delimiter, code, code_size, false, false);
 }
 
+// Mount the card, skip its header, and cache valid description/code rows.
 static bool load_assets_from_sd(const char *asset_name) {
     selected_file_has_no_codes = false;
     sd_missing = false;
@@ -864,6 +950,7 @@ static bool load_assets_from_sd(const char *asset_name) {
             }
         }
 
+        // Discard the remainder of an oversized row so fragments aren't parsed.
         if (line_truncated) {
             do {
                 if (f_gets(line, sizeof(line), &file) == NULL ||
@@ -891,6 +978,7 @@ static bool load_assets_from_sd(const char *asset_name) {
     return true;
 }
 
+// Cycle the asset prefix while preserving its numeric suffix.
 static void select_modality(int direction) {
     size_t count = sizeof(modalities) / sizeof(modalities[0]);
     modality_index = (modality_index + count + direction) % count;
@@ -912,6 +1000,7 @@ static void select_modality(int direction) {
     lcd_show_asset();
 }
 
+// Increment the currently selected asset digit and load the matching file.
 static void increment_selected_digit(void) {
     size_t number_start = 0;
     while (selected_asset_name[number_start] != '\0' &&
@@ -929,6 +1018,7 @@ static void increment_selected_digit(void) {
     lcd_show_asset();
 }
 
+// Translate supported ASCII input into a USB HID key and modifier.
 static bool character_to_key(char character, uint8_t *keycode, uint8_t *modifier) {
     *keycode = 0;
     *modifier = 0;
@@ -958,6 +1048,7 @@ static bool character_to_key(char character, uint8_t *keycode, uint8_t *modifier
     return true;
 }
 
+// Initialize the asynchronous HID task for the current option code.
 static void start_current_code(void) {
     keyboard_task_state.text = output_lines[current_code_index];
     keyboard_task_state.character_index = 0;
@@ -969,12 +1060,14 @@ static void start_current_code(void) {
     lcd_show_asset();
 }
 
+// Begin a manual transfer at the first valid option in the selected asset.
 static void start_selected_asset(void) {
     current_code_index = 0;
     manual_transfer_active = true;
     start_current_code();
 }
 
+// Send one HID press or release when due, keeping the main loop non-blocking.
 static void keyboard_task(void) {
     KeyboardTask *task = &keyboard_task_state;
     uint32_t now_ms = to_ms_since_boot(get_absolute_time());
@@ -1025,6 +1118,7 @@ static void keyboard_task(void) {
     }
 }
 
+// This keyboard-only firmware does not provide input reports to the host.
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
                                hid_report_type_t report_type,
                                uint8_t *buffer, uint16_t reqlen) {
@@ -1036,6 +1130,7 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
     return 0;
 }
 
+// Ignore host output reports; this device only sends keyboard input.
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
                            hid_report_type_t report_type,
                            uint8_t const *buffer, uint16_t bufsize) {
@@ -1046,6 +1141,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
     (void)bufsize;
 }
 
+// Initialize hardware and USB, handle startup/update modes, then service the UI.
 int main(void) {
     stdio_init_all();
     gpio_init(STATUS_LED_PIN);
@@ -1056,6 +1152,7 @@ int main(void) {
     initialize_button(NEXT_CHARACTER_BUTTON_PIN, &next_character_button_state);
     initialize_button(MODALITY_BUTTON_PIN, &modality_button_state);
     sleep_ms(50);
+    // The scratch marker allows a deliberate update-mode exit to skip re-entry.
     bool skip_update_mode = watchdog_hw->scratch[0] == UPDATE_MODE_REBOOT_MAGIC;
     watchdog_hw->scratch[0] = 0;
     maintenance_mode = !skip_update_mode && !gpio_get(SEND_BUTTON_PIN);

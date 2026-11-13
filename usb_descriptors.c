@@ -12,6 +12,9 @@ extern bool maintenance_mode;
 #define KEYBOARD_CONFIG_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
 #define STORAGE_CONFIG_LEN (TUD_CONFIG_DESC_LEN + TUD_MSC_DESC_LEN)
 
+// USB IDs and endpoints shared by the two mutually exclusive device modes.
+
+// Device identity exposed in normal keyboard mode.
 tusb_desc_device_t const desc_keyboard_device = {
     .bLength = sizeof(tusb_desc_device_t),
     .bDescriptorType = TUSB_DESC_DEVICE,
@@ -29,6 +32,7 @@ tusb_desc_device_t const desc_keyboard_device = {
     .bNumConfigurations = 0x01
 };
 
+// Device identity exposed when the SD card is presented as USB storage.
 tusb_desc_device_t const desc_storage_device = {
     .bLength = sizeof(tusb_desc_device_t),
     .bDescriptorType = TUSB_DESC_DEVICE,
@@ -46,6 +50,7 @@ tusb_desc_device_t const desc_storage_device = {
     .bNumConfigurations = 0x01
 };
 
+// Select the device descriptor before TinyUSB enumerates the device.
 uint8_t const *tud_descriptor_device_cb(void) {
     return (uint8_t const *)(maintenance_mode ? &desc_storage_device
                                               : &desc_keyboard_device);
@@ -55,11 +60,13 @@ uint8_t const desc_hid_report[] = {
     TUD_HID_REPORT_DESC_KEYBOARD()
 };
 
+// Return the HID report describing the keyboard interface.
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
     (void)instance;
     return desc_hid_report;
 }
 
+// Normal mode exposes one HID keyboard interface.
 uint8_t const desc_configuration[] = {
     TUD_CONFIG_DESCRIPTOR(1, 1, 0, KEYBOARD_CONFIG_LEN,
                           TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
@@ -68,12 +75,14 @@ uint8_t const desc_configuration[] = {
                        CFG_TUD_HID_EP_BUFSIZE, 10)
 };
 
+// Maintenance mode exposes the microSD card as a USB mass-storage interface.
 uint8_t const desc_storage_configuration[] = {
     TUD_CONFIG_DESCRIPTOR(1, 1, 0, STORAGE_CONFIG_LEN,
                           TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
     TUD_MSC_DESCRIPTOR(0, 0, EPNUM_MSC_OUT, EPNUM_MSC_IN, 64)
 };
 
+// Select the matching configuration descriptor for the active device mode.
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
     (void)index;
     return maintenance_mode ? desc_storage_configuration : desc_configuration;
@@ -81,6 +90,7 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
 
 static uint16_t desc_str[32];
 
+// Build the UTF-16LE USB string descriptors requested by the host.
 uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     (void)langid;
     const char *text;

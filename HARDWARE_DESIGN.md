@@ -24,7 +24,7 @@ The firmware targets an Adafruit Feather RP2040 Adalogger with an Adafruit 128x6
 | SD chip select | GP23 | Onboard microSD |
 | Status LED | GP13 | Adalogger onboard LED |
 
-The buttons use the RP2040's internal pull-ups. The display's default I2C address is 0x3C; the firmware also checks 0x3D. The SD card detect pin is not required by the firmware.
+The OLED uses I2C1 at 100 kHz. Its default address is 0x3C; the firmware also checks 0x3D. The SH1107 controller memory is rotated relative to the 128x64 panel, so firmware rendering maps the display coordinates into the controller's 64-column, 16-page layout. The buttons use the RP2040's internal pull-ups. The SD card detect pin is not required by the firmware.
 
 ## Enclosure notes
 

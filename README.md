@@ -8,7 +8,7 @@ The firmware targets the Adafruit Feather RP2040 Adalogger and OLED FeatherWing.
 
 ### OLED
 
-The 128x64 SH1107 display uses I2C1 on the Feather's SDA/SCL pins. The firmware probes addresses `0x3C` and `0x3D`.
+The 128x64 SH1107 display uses I2C1 at 100 kHz on the Feather's SDA/SCL pins. The firmware probes addresses `0x3C` and `0x3D`. The SH1107's controller memory is rotated relative to the panel, so the firmware maps the 128x64 drawing coordinates into the controller's 64-column, 16-page layout before updating the display.
 
 | FeatherWing | Feather RP2040 Adalogger |
 | --- | --- |
